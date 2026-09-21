@@ -39,6 +39,27 @@ cat <<EOF > "$USER_HOME/.claude/settings.json"
 EOF
 echo "[claude] Configured $USER_HOME/.claude/settings.json pointing to ${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}"
 
+# Auto-restore ~/.claude.json from volume backup if missing, or initialize cleanly
+if [ ! -f "$USER_HOME/.claude.json" ]; then
+    LATEST_BACKUP=$(ls -t "$USER_HOME/.claude/backups/.claude.json.backup."* 2>/dev/null | head -n 1 || true)
+    if [ -n "$LATEST_BACKUP" ] && [ -f "$LATEST_BACKUP" ]; then
+        echo "[claude] Restoring configuration from backup: $LATEST_BACKUP..."
+        cp "$LATEST_BACKUP" "$USER_HOME/.claude.json"
+    elif [ -f "$USER_HOME/.claude/.claude.json" ]; then
+        cp "$USER_HOME/.claude/.claude.json" "$USER_HOME/.claude.json"
+    else
+        echo "[claude] Initializing clean $USER_HOME/.claude.json..."
+        cat <<EOF > "$USER_HOME/.claude.json"
+{
+  "hasCompletedOnboarding": true,
+  "bypassPermissionsModeAccepted": true
+}
+EOF
+    fi
+fi
+# Persist in mounted volume so it survives container recreations
+cp "$USER_HOME/.claude.json" "$USER_HOME/.claude/.claude.json" 2>/dev/null || true
+
 # 2. Configure Git User Identity & Safe Directory (container-scoped $USER_HOME/.gitconfig)
 GIT_NAME="${GIT_USER_NAME:-Heimdall Dev Agent}"
 GIT_EMAIL="${GIT_USER_EMAIL:-heimdall@internal}"

@@ -418,6 +418,7 @@ bot.on('text', async (ctx) => {
     text,
     '--output-format',
     'stream-json',
+    '--verbose',
     '--dangerously-skip-permissions',
     '--permission-prompts',
     'none',
