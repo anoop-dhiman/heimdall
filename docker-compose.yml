@@ -42,6 +42,21 @@ services:
     environment:
       - WORKSPACE_DIR=/workspace
       - NODE_ENV=production
+      # Telegram Bot Settings
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - ALLOWED_TELEGRAM_USER_IDS=${ALLOWED_TELEGRAM_USER_IDS:-}
+      # Git PAT & Identity Settings
+      - GIT_PAT=${GIT_PAT:-}
+      - GIT_USER_NAME=${GIT_USER_NAME:-Heimdall Dev Agent}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-heimdall@internal}
+      # Docker Registry Settings
+      - DOCKER_REGISTRY=${DOCKER_REGISTRY:-}
+      - DOCKER_USERNAME=${DOCKER_USERNAME:-}
+      - DOCKER_PASSWORD=${DOCKER_PASSWORD:-}
+      # Kubernetes Settings
+      - KUBECONFIG_BASE64=${KUBECONFIG_BASE64:-}
+      # Redirect kubectl cache to writable in-container directory (handles read-only ~/.kube mount)
+      - KUBECACHEDIR=/tmp/kube-cache
       # Bifrost Gemini Gateway Settings
       - CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}
@@ -50,8 +65,6 @@ services:
       - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-gemini-3.1-pro-preview[1m]}
       - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-gemini-3.8-flash[1m]}
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-gemini-3.5-flash-lite[1m]}
-      # Redirect kubectl cache to writable in-container directory (handles read-only ~/.kube mount)
-      - KUBECACHEDIR=/tmp/kube-cache
     volumes:
       # Host Git repository mounted into container workspace
       - ${HOST_REPO_PATH:-./workspace}:/workspace
