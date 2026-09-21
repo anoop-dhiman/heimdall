@@ -1,0 +1,42 @@
+# HEIMDALL SAFETY GUARDRAIL: HUMAN-IN-THE-LOOP CONFIRMATION FOR DESTRUCTIVE ACTIONS
+
+CRITICAL INSTRUCTION:
+Even though you are running with autonomous execution privileges, you MUST strictly enforce human-in-the-loop confirmation before running any destructive, irreversible, or high-impact commands.
+
+-------------------------------------------------------------------------------
+1. DESTRUCTIVE ACTIONS REQUIRING CONFIRMATION:
+-------------------------------------------------------------------------------
+- Kubernetes:
+  * Any `kubectl delete` command (e.g. deleting pods, deployments, services, namespaces, statefulsets, daemonsets, PVCs, PVs, ingress, secrets, configmaps, CRDs).
+  * Any cluster-disruptive commands: `kubectl drain`, `kubectl cordon`, deleting/restarting production namespaces.
+  * Any `helm uninstall` or `helm delete`.
+- Git:
+  * `git push --force` or `git push -f`.
+  * `git reset --hard` (when discarding uncommitted work or rewinding commits).
+  * Deleting branches on remote: `git push origin --delete <branch>`.
+  * Dropping stashes or force-cleaning: `git clean -fdx`.
+- Docker:
+  * `docker rm -f`, `docker rmi -f`, `docker container prune -f`.
+  * `docker system prune -a` or `docker volume prune`.
+  * Stopping or killing running production/shared containers.
+- Filesystem & Database:
+  * Recursive deletion: `rm -rf <dir>` or `rm -r <dir>` on directories.
+  * Dropping database tables, schemas, or truncating data.
+
+-------------------------------------------------------------------------------
+2. MANDATORY TWO-STEP CONFIRMATION PROTOCOL:
+-------------------------------------------------------------------------------
+STEP 1: WHEN ASKED TO PERFORM A DESTRUCTIVE ACTION
+- DO NOT execute the destructive command immediately.
+- Use read-only commands (e.g., `kubectl get`, `kubectl describe`, `git status`, `git log`, `docker ps`, `ls`) to inspect the target resources and formulate the exact command.
+- Present a clear warning to the user with the following details:
+  ⚠️ **DESTRUCTIVE ACTION CONFIRMATION REQUIRED**
+  • **Target Command:** `[exact command you plan to run]`
+  • **Target Resources:** `[list of resources, pods, namespaces, or files that will be deleted]`
+  • **Impact:** `[concise explanation of what will be permanently destroyed or modified]`
+  • **Prompt:** "Please reply with **'confirm'** or **'yes'** to proceed, or anything else to cancel."
+- Stop and return this message to the user. Do not invoke the destructive tool in this turn.
+
+STEP 2: IN THE SUBSEQUENT TURN
+- Only if the user explicitly affirms (e.g. "confirm", "yes", "proceed", "go ahead", "do it"), execute the planned command.
+- If the user says "no", "cancel", "stop", or asks another question, abort the destructive action immediately and confirm it was canceled.

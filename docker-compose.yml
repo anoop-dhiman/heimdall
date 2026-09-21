@@ -1,0 +1,77 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Bifrost: AI Gateway Sidecar for Gemini / Anthropic Protocol Translation
+  # ---------------------------------------------------------------------------
+  bifrost:
+    image: maximhq/bifrost
+    container_name: heimdall-bifrost
+    restart: unless-stopped
+    user: "1001:1001"
+    ports:
+      - "8080:8080"
+    volumes:
+      - bifrost_data:/app/data
+      - ./bifrost-config.json:/app/data/config.json:ro
+    environment:
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:-}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ---------------------------------------------------------------------------
+  # Heimdall: DevOps Guardian (Telegram Controller + Claude Code CLI + Toolchains)
+  # ---------------------------------------------------------------------------
+  heimdall:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: heimdall
+    restart: unless-stopped
+    depends_on:
+      - bifrost
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - WORKSPACE_DIR=/workspace
+      - NODE_ENV=production
+      # Bifrost Gemini Gateway Settings
+      - CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-dummy-key}
+      - ANTHROPIC_DEFAULT_FABLE_MODEL=${ANTHROPIC_DEFAULT_FABLE_MODEL:-gemini-3.1-pro-preview[1m]}
+      - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-gemini-3.1-pro-preview[1m]}
+      - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-gemini-3.8-flash[1m]}
+      - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-gemini-3.5-flash-lite[1m]}
+    volumes:
+      # Host Git repository mounted into container workspace
+      - ${HOST_REPO_PATH:-./workspace}:/workspace
+      # Claude Code persistent credentials and conversation sessions
+      - claude_sessions:/root/.claude
+      # Kubernetes kubeconfig and cluster authentication tokens
+      - kube_data:/root/.kube
+      # Docker daemon socket to build and push images
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Docker CLI credentials cache (docker login)
+      - docker_data:/root/.docker
+    # Required for Docker socket operations
+    security_opt:
+      - no-new-privileges:false
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  bifrost_data:
+    name: heimdall_bifrost_data
+  claude_sessions:
+    name: heimdall_claude_sessions
+  kube_data:
+    name: heimdall_kube_data
+  docker_data:
+    name: heimdall_docker_data

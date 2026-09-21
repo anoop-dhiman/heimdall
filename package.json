@@ -1,0 +1,20 @@
+{
+  "name": "heimdall",
+  "version": "1.0.0",
+  "description": "Heimdall: Telegram bot for remote headless Claude Code execution with Bifrost, Docker, Kubernetes, and Git",
+  "type": "module",
+  "main": "bot.mjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anoop-dhiman/heimdall.git"
+  },
+  "scripts": {
+    "start": "node bot.mjs"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
