@@ -13,23 +13,44 @@ echo "================================================="
 
 if [ -f "$ENC_FILE" ]; then
     echo "[+] Encrypted secrets file '$ENC_FILE' detected."
-    echo "[!] Enter your master passphrase to decrypt into memory:"
 
-    # Verify passphrase by attempting decryption into a test pipe first
-    DECRYPT_CHECK=$(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -in "$ENC_FILE" 2>&1 >/dev/null || true)
-    if [ -n "$DECRYPT_CHECK" ]; then
-        echo "[-] Decryption failed: Invalid passphrase or corrupted file."
+    # Prompt for passphrase once
+    read -s -p "Enter master passphrase: " PASSPHRASE
+    echo ""
+
+    if [ -z "$PASSPHRASE" ]; then
+        echo "[-] Error: Passphrase cannot be empty."
         exit 1
     fi
 
-    echo "[+] Passphrase accepted. Launching Heimdall stack in memory..."
+    # Create an ephemeral in-memory temporary file (/dev/shm on Linux is pure RAM, wiped on exit)
+    TMP_ENV=$(mktemp -p /dev/shm 2>/dev/null || mktemp)
+    chmod 600 "$TMP_ENV"
 
-    # Stream decrypted secrets directly into Docker Compose in RAM (never touches disk)
-    docker compose --env-file <(openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -in "$ENC_FILE") up -d "$@"
+    # Ensure temporary file is wiped immediately when script exits or is interrupted
+    trap 'rm -f "$TMP_ENV"' EXIT INT TERM
+
+    # Decrypt into the ephemeral memory file
+    if ! echo "$PASSPHRASE" | openssl enc -d -aes-256-cbc -pbkdf2 -iter 100000 -in "$ENC_FILE" -pass stdin -out "$TMP_ENV" 2>/dev/null; then
+        echo "[-] Decryption failed: Invalid passphrase or corrupted file."
+        unset PASSPHRASE
+        exit 1
+    fi
+    unset PASSPHRASE
+
+    if [ ! -s "$TMP_ENV" ]; then
+        echo "[-] Decryption resulted in empty configuration."
+        exit 1
+    fi
+
+    echo "[+] Passphrase accepted. Launching Heimdall stack..."
+
+    # Pass the ephemeral in-memory env file to Docker Compose
+    docker compose --env-file "$TMP_ENV" up -d "$@"
 
     echo "================================================="
     echo " ✅ Heimdall is running!"
-    echo " 🔒 Secrets were decrypted into memory only."
+    echo " 🔒 Secrets loaded into memory; ephemeral file wiped."
     echo " 📂 Zero plaintext secrets on disk."
     echo "================================================="
     echo "To view live logs: docker compose logs -f"
