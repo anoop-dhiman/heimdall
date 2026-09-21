@@ -7,8 +7,11 @@ services:
     container_name: heimdall-bifrost
     restart: unless-stopped
     user: "1001:1001"
+    # Internal Docker network; optional loopback binding on non-common port (28475)
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${BIFROST_PORT:-28475}:8080"
+    expose:
+      - "8080"
     volumes:
       - bifrost_data:/app/data
       - ./bifrost-config.json:/app/data/config.json:ro
