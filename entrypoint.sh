@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+USER_HOME="${HOME:-/home/node}"
+
 echo "================================================="
 echo " Starting Heimdall Remote Dev Agent Entrypoint"
+echo " User: $(id -un) (UID: $(id -u), GID: $(id -g))"
+echo " Home: $USER_HOME"
 echo "================================================="
 
 # 1. Configure Claude Code Settings for Bifrost Gateway
-mkdir -p /root/.claude
-cat <<EOF > /root/.claude/settings.json
+mkdir -p "$USER_HOME/.claude"
+cat <<EOF > "$USER_HOME/.claude/settings.json"
 {
   "env": {
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
@@ -24,9 +28,9 @@ cat <<EOF > /root/.claude/settings.json
   "model": "sonnet"
 }
 EOF
-echo "[claude] Configured /root/.claude/settings.json pointing to ${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}"
+echo "[claude] Configured $USER_HOME/.claude/settings.json pointing to ${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}"
 
-# 2. Configure Git User Identity & Safe Directory (container-scoped /root/.gitconfig)
+# 2. Configure Git User Identity & Safe Directory (container-scoped $USER_HOME/.gitconfig)
 GIT_NAME="${GIT_USER_NAME:-Heimdall Dev Agent}"
 GIT_EMAIL="${GIT_USER_EMAIL:-heimdall@internal}"
 
@@ -39,7 +43,7 @@ git config --global init.defaultBranch "${GIT_DEFAULT_BRANCH:-main}"
 echo "[git] Configured Git user: $GIT_NAME <$GIT_EMAIL>"
 
 # 3. Secure Container-Only Git Authentication (Zero host leakage)
-# GIT_PAT is stored STRICTLY in container-only /root/.git-credentials and /root/.gitconfig.
+# GIT_PAT is stored STRICTLY in container-only $USER_HOME/.git-credentials and $USER_HOME/.gitconfig.
 # The mounted host repository at /workspace/.git is NEVER modified with tokens or credentials.
 if [ -n "$GIT_PAT" ]; then
     DETECTED_REMOTE=$(git -C /workspace config --get remote.origin.url 2>/dev/null || echo "$GIT_REPO_URL")
@@ -49,16 +53,16 @@ if [ -n "$GIT_PAT" ]; then
     fi
 
     # Container-isolated credential file
-    cat <<EOF > /root/.git-credentials
+    cat <<EOF > "$USER_HOME/.git-credentials"
 https://${GIT_USERNAME:-x-access-token}:${GIT_PAT}@${REPO_HOST}
 EOF
-    chmod 600 /root/.git-credentials
+    chmod 600 "$USER_HOME/.git-credentials"
 
-    # Configure helper globally for container root
-    git config --global credential.helper "store --file /root/.git-credentials"
+    # Configure helper globally for container user
+    git config --global credential.helper "store --file $USER_HOME/.git-credentials"
     git config --global credential.useHttpPath true
 
-    # Add rewrite rule in /root/.gitconfig for HTTPS URLs targeting this host
+    # Add rewrite rule in $USER_HOME/.gitconfig for HTTPS URLs targeting this host
     git config --global url."https://${GIT_USERNAME:-x-access-token}:${GIT_PAT}@${REPO_HOST}/".insteadOf "https://${REPO_HOST}/"
 
     echo "[git] Container-only GIT_PAT configured for host: ${REPO_HOST} (zero host leakage)"
@@ -85,20 +89,20 @@ mkdir -p /tmp/kube-cache
 export KUBECACHEDIR=/tmp/kube-cache
 
 if [ -n "$KUBECONFIG_BASE64" ]; then
-    echo "[kube] Injected KUBECONFIG_BASE64 detected. Writing to /root/.kube/config..."
-    mkdir -p /root/.kube 2>/dev/null || true
-    echo "$KUBECONFIG_BASE64" | base64 -d > /root/.kube/config 2>/dev/null || echo "[kube] Notice: /root/.kube is read-only mounted."
+    echo "[kube] Injected KUBECONFIG_BASE64 detected. Writing to $USER_HOME/.kube/config..."
+    mkdir -p "$USER_HOME/.kube" 2>/dev/null || true
+    echo "$KUBECONFIG_BASE64" | base64 -d > "$USER_HOME/.kube/config" 2>/dev/null || echo "[kube] Notice: $USER_HOME/.kube is read-only mounted."
 elif [ -n "$KUBECONFIG_RAW" ]; then
-    echo "[kube] Injected KUBECONFIG_RAW detected. Writing to /root/.kube/config..."
-    mkdir -p /root/.kube 2>/dev/null || true
-    echo "$KUBECONFIG_RAW" > /root/.kube/config 2>/dev/null || echo "[kube] Notice: /root/.kube is read-only mounted."
+    echo "[kube] Injected KUBECONFIG_RAW detected. Writing to $USER_HOME/.kube/config..."
+    mkdir -p "$USER_HOME/.kube" 2>/dev/null || true
+    echo "$KUBECONFIG_RAW" > "$USER_HOME/.kube/config" 2>/dev/null || echo "[kube] Notice: $USER_HOME/.kube is read-only mounted."
 fi
 
-if [ -f "/root/.kube/config" ]; then
+if [ -f "$USER_HOME/.kube/config" ]; then
     echo "[kube] Kubeconfig available. Current cluster context:"
     kubectl config current-context 2>/dev/null || echo "[kube] Context not active."
 else
-    echo "[kube] Warning: /root/.kube/config not found. Mount ~/.kube:/root/.kube:ro or provide KUBECONFIG_BASE64."
+    echo "[kube] Warning: $USER_HOME/.kube/config not found. Mount ~/.kube:$USER_HOME/.kube:ro or provide KUBECONFIG_BASE64."
 fi
 
 # 6. Verify Host Repository Mount

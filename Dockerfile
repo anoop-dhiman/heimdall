@@ -3,7 +3,7 @@ FROM node:22-bookworm-slim
 # Prevent interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 1. Install base utilities, Git, OpenSSH, and Python 3
+# 1. Install base utilities, Git, OpenSSH, sudo, and Python 3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     apt-transport-https \
     lsb-release \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install Docker CLI (client) and Buildx/Compose plugins via official Docker repository
@@ -47,7 +48,13 @@ RUN curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/s
 # 5. Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# 6. Setup App directory
+# 6. Configure non-root user (node: UID 1000) with passwordless sudo & docker group
+# Claude Code blocks --dangerously-skip-permissions if executed by root (UID 0)
+RUN groupadd -g 999 docker 2>/dev/null || groupadd docker 2>/dev/null || true \
+    && usermod -aG sudo,docker node \
+    && echo "node ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# 7. Setup App directory
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
@@ -57,9 +64,12 @@ COPY entrypoint.sh ./
 COPY safety-prompt.txt ./
 RUN chmod +x /app/entrypoint.sh
 
-# 7. Setup Workspace and config directories
-RUN mkdir -p /workspace /root/.claude /root/.kube /root/.docker
+# 8. Setup Workspace and config directories for user 'node'
+RUN mkdir -p /workspace /home/node/.claude /home/node/.kube /home/node/.docker /tmp/kube-cache \
+    && chown -R node:node /app /workspace /home/node /tmp/kube-cache
 
+USER node
+ENV HOME=/home/node
 WORKDIR /workspace
 
 ENTRYPOINT ["/app/entrypoint.sh"]

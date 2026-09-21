@@ -423,7 +423,11 @@ bot.on('text', async (ctx) => {
     'none',
   ];
 
-  if (fs.existsSync('/root/.claude/settings.json')) {
+  const userHome = process.env.HOME || '/home/node';
+  const settingsPath = path.join(userHome, '.claude', 'settings.json');
+  if (fs.existsSync(settingsPath)) {
+    args.push('--settings', settingsPath);
+  } else if (fs.existsSync('/root/.claude/settings.json')) {
     args.push('--settings', '/root/.claude/settings.json');
   }
 
@@ -462,7 +466,8 @@ bot.on('text', async (ctx) => {
         CI: 'true',
         FORCE_COLOR: '0',
       },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      // Pass 'ignore' for stdin (equivalent to < /dev/null) so Claude Code does not wait 3s for input
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
     clearInterval(typingInterval);

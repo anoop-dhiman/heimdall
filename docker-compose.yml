@@ -69,13 +69,13 @@ services:
       # Host Git repository mounted into container workspace
       - ${HOST_REPO_PATH:-./workspace}:/workspace
       # Claude Code persistent credentials and conversation sessions
-      - claude_sessions:/root/.claude
+      - claude_sessions:/home/node/.claude
       # Host Kubernetes configuration mounted as read-only
-      - ${HOST_KUBE_PATH:-~/.kube}:/root/.kube:ro
+      - ${HOST_KUBE_PATH:-~/.kube}:/home/node/.kube:ro
       # Docker daemon socket to build and push images
       - /var/run/docker.sock:/var/run/docker.sock
       # Docker CLI credentials cache (docker login)
-      - docker_data:/root/.docker
+      - docker_data:/home/node/.docker
     # Required for Docker socket operations
     security_opt:
       - no-new-privileges:false
