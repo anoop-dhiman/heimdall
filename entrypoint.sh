@@ -3,6 +3,15 @@ set -eo pipefail
 
 USER_HOME="${HOME:-/home/node}"
 
+# Ensure user ownership over persistent volumes that may have been initialized as root
+if command -v sudo >/dev/null 2>&1; then
+    sudo mkdir -p "$USER_HOME/.claude" "$USER_HOME/.docker" /tmp/kube-cache 2>/dev/null || true
+    sudo chown -R "$(id -u):$(id -g)" "$USER_HOME/.claude" "$USER_HOME/.docker" /tmp/kube-cache 2>/dev/null || true
+    if [ -S "/var/run/docker.sock" ]; then
+        sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
+    fi
+fi
+
 echo "================================================="
 echo " Starting Heimdall Remote Dev Agent Entrypoint"
 echo " User: $(id -un) (UID: $(id -u), GID: $(id -g))"
