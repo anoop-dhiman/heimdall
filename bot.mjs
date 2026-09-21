@@ -451,8 +451,11 @@ bot.on('text', async (ctx) => {
   }
 
   const startTime = Date.now();
-  let accumulatedText = '';
   let finalResultText = '';
+  let latestAssistantText = '';
+  const allAssistantTexts = [];
+  let streamedText = '';
+  let nonJsonOutput = '';
   let detectedSessionId = null;
   let stderrBuffer = '';
 
@@ -497,35 +500,70 @@ bot.on('text', async (ctx) => {
       else if (event.sessionId) detectedSessionId = event.sessionId;
       else if (event.session?.id) detectedSessionId = event.session.id;
 
-      // Detect tool use
+      // 1. Detect tool use
       if (event.type === 'tool_use' || event.type === 'tool_call') {
         updater.recordToolUse(event.name || event.tool || 'Tool', event.input || event.arguments);
       } else if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
         updater.recordToolUse(event.content_block.name || 'Tool', event.content_block.input);
-      } else if (Array.isArray(event.content)) {
-        for (const block of event.content) {
-          if (block.type === 'tool_use') {
-            updater.recordToolUse(block.name, block.input);
+      }
+
+      // 2. Capture 'assistant' message events (Claude's conversational turns & answers)
+      if (event.type === 'assistant' && event.message?.content) {
+        let turnText = '';
+        const blocks = Array.isArray(event.message.content) ? event.message.content : [event.message.content];
+        for (const block of blocks) {
+          if (block.type === 'text' && block.text) {
+            turnText += block.text;
+          } else if (block.type === 'tool_use') {
+            updater.recordToolUse(block.name || 'Tool', block.input);
           }
+        }
+        if (turnText.trim()) {
+          latestAssistantText = turnText.trim();
+          allAssistantTexts.push(turnText.trim());
         }
       }
 
-      // Collect textual responses
+      // 3. Direct event.content arrays
+      if (Array.isArray(event.content)) {
+        let blockText = '';
+        for (const block of event.content) {
+          if (block.type === 'text' && block.text) {
+            blockText += block.text;
+          } else if (block.type === 'tool_use') {
+            updater.recordToolUse(block.name || 'Tool', block.input);
+          }
+        }
+        if (blockText.trim()) {
+          latestAssistantText = blockText.trim();
+          allAssistantTexts.push(blockText.trim());
+        }
+      }
+
+      // 4. Streaming deltas (stream_event and content_block_delta)
+      if (event.type === 'stream_event') {
+        const streamDelta = event.event?.delta;
+        if (streamDelta?.text) {
+          streamedText += streamDelta.text;
+        }
+      } else if (event.type === 'content_block_delta' && event.delta?.text) {
+        streamedText += event.delta.text;
+      } else if (event.type === 'text' && event.text) {
+        streamedText += event.text;
+      }
+
+      // 5. Final 'result' event
       if (event.type === 'result') {
-        if (typeof event.result === 'string') {
-          finalResultText = event.result;
-        } else if (event.result?.text) {
-          finalResultText = event.result.text;
+        if (typeof event.result === 'string' && event.result.trim()) {
+          finalResultText = event.result.trim();
+        } else if (event.result?.text && typeof event.result.text === 'string') {
+          finalResultText = event.result.text.trim();
         }
         if (event.session_id) detectedSessionId = event.session_id;
-      } else if (event.type === 'content_block_delta' && event.delta?.text) {
-        accumulatedText += event.delta.text;
-      } else if (event.type === 'text' && event.text) {
-        accumulatedText += event.text;
       }
     } catch {
       // Non-JSON line fallback (e.g. raw output or error trace)
-      accumulatedText += trimmed + '\n';
+      nonJsonOutput += trimmed + '\n';
     }
   });
 
@@ -561,8 +599,24 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    // Determine the response text
-    let outputText = (finalResultText || accumulatedText || '').trim();
+    // Determine the response text in order of priority:
+    // 1. finalResultText (if present and non-empty)
+    // 2. latestAssistantText (in multi-tool runs, the last assistant message is the final answer)
+    // 3. allAssistantTexts combined (if multiple assistant comments)
+    // 4. streamedText (if incremental token stream captured)
+    // 5. nonJsonOutput (raw stdout fallback)
+    let outputText = '';
+    if (finalResultText && finalResultText.trim()) {
+      outputText = finalResultText.trim();
+    } else if (latestAssistantText && latestAssistantText.trim()) {
+      outputText = latestAssistantText.trim();
+    } else if (allAssistantTexts.length > 0) {
+      outputText = allAssistantTexts.join('\n\n').trim();
+    } else if (streamedText && streamedText.trim()) {
+      outputText = streamedText.trim();
+    } else if (nonJsonOutput && nonJsonOutput.trim()) {
+      outputText = nonJsonOutput.trim();
+    }
 
     if (code !== 0 && !outputText) {
       await updater.close(`❌ *Claude exited with code ${code}* (${durationSec}s)`);
