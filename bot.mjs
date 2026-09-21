@@ -632,11 +632,23 @@ bot.on('text', async (ctx) => {
 
     await updater.close(`✅ *Completed in ${durationSec}s*`);
 
-    // Handle Telegram 4096 character limit
-    // If response > 3800 characters, send as Markdown file attachment
-    if (outputText.length > 3800) {
+    // Handle message delivery with smart splitting
+    // For outputs up to 12,000 characters (~3 Telegram messages), send directly in chat.
+    // For truly massive outputs (>12,000 characters), send as .md attachment with preview.
+    const MAX_CHAT_LENGTH = parseInt(process.env.MAX_CHAT_MESSAGE_LENGTH || '12000', 10);
+
+    if (outputText.length <= MAX_CHAT_LENGTH) {
+      const chunks = splitIntoTelegramChunks(outputText, 3800);
+      for (const chunk of chunks) {
+        await sendSafeTelegramMessage(ctx, chunk);
+      }
+    } else {
+      // Truly massive output: send preview snippet in chat + full output as attachment
       const filename = `claude-response-${Date.now()}.md`;
-      console.log(`[response] Output length ${outputText.length} > 3800. Sending as document attachment: ${filename}`);
+      const previewText = outputText.slice(0, 800).trim() + '\n\n... _(Full output attached below)_';
+      await sendSafeTelegramMessage(ctx, previewText);
+
+      console.log(`[response] Output length ${outputText.length} > ${MAX_CHAT_LENGTH}. Sending as document attachment: ${filename}`);
       try {
         await ctx.replyWithDocument(
           {
@@ -644,32 +656,67 @@ bot.on('text', async (ctx) => {
             filename,
           },
           {
-            caption: `📄 *Response too long for Telegram message* (${outputText.length} characters).\nAttached as \`${filename}\`.`,
+            caption: `📄 *Full Response Attached* (${outputText.length} characters).\nFile: \`${filename}\``,
             parse_mode: 'Markdown',
           }
         );
       } catch (attachErr) {
-        console.error('[response] Failed to send document attachment:', attachErr);
-        // Fallback: chunk into multiple messages
-        await sendChunkedMessage(ctx, outputText);
-      }
-    } else {
-      // Send regular message with Markdown formatting, fallback to plain text if syntax fails
-      try {
-        await ctx.reply(outputText, { parse_mode: 'Markdown' });
-      } catch (mdErr) {
-        console.warn('[response] Markdown formatting failed, sending as plain text:', mdErr.message);
-        await ctx.reply(outputText);
+        console.error('[response] Failed to send document attachment, falling back to chunking:', attachErr);
+        const chunks = splitIntoTelegramChunks(outputText, 3800);
+        for (const chunk of chunks) {
+          await sendSafeTelegramMessage(ctx, chunk);
+        }
       }
     }
   });
 });
 
-// Helper for chunked fallback if document sending fails
-async function sendChunkedMessage(ctx, fullText, chunkSize = 3500) {
-  for (let i = 0; i < fullText.length; i += chunkSize) {
-    const chunk = fullText.substring(i, i + chunkSize);
-    await ctx.reply(chunk).catch((err) => console.error('[chunk] Send error:', err));
+// Smart paragraph & line boundary chunker for Telegram messages
+function splitIntoTelegramChunks(text, maxChunkSize = 3800) {
+  if (text.length <= maxChunkSize) return [text];
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxChunkSize) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Prefer splitting at double newlines (paragraphs)
+    let splitIdx = remaining.lastIndexOf('\n\n', maxChunkSize);
+    if (splitIdx === -1 || splitIdx < maxChunkSize * 0.4) {
+      // Fallback: single newline
+      splitIdx = remaining.lastIndexOf('\n', maxChunkSize);
+    }
+    if (splitIdx === -1 || splitIdx < maxChunkSize * 0.4) {
+      // Fallback: space
+      splitIdx = remaining.lastIndexOf(' ', maxChunkSize);
+    }
+    if (splitIdx === -1) {
+      // Hard split
+      splitIdx = maxChunkSize;
+    }
+
+    chunks.push(remaining.substring(0, splitIdx).trim());
+    remaining = remaining.substring(splitIdx).trim();
+  }
+
+  return chunks.filter((c) => c.length > 0);
+}
+
+// Send message with Markdown formatting and automatic fallback to plain text if Markdown parsing fails
+async function sendSafeTelegramMessage(ctx, text) {
+  if (!text || !text.trim()) return;
+  try {
+    await ctx.reply(text, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.warn('[response] Markdown formatting failed, sending as plain text:', err.message);
+    try {
+      await ctx.reply(text.replace(/[*_`\[\]()]/g, ''));
+    } catch {
+      await ctx.reply(text);
+    }
   }
 }
 
