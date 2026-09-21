@@ -6,7 +6,8 @@ services:
     image: maximhq/bifrost
     container_name: heimdall-bifrost
     restart: unless-stopped
-    user: "1001:1001"
+    # Matches volume ownership (owned by 1000:0 on host)
+    user: "${BIFROST_UID:-1000}:${BIFROST_GID:-0}"
     # Internal Docker network; optional loopback binding on non-common port (28475)
     ports:
       - "127.0.0.1:${BIFROST_PORT:-28475}:8080"
