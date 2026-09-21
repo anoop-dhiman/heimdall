@@ -81,22 +81,24 @@ if [ -n "$DOCKER_USERNAME" ] && [ -n "$DOCKER_PASSWORD" ]; then
 fi
 
 # 5. Kubernetes (Kubeconfig Setup)
-mkdir -p /root/.kube
+mkdir -p /tmp/kube-cache
+export KUBECACHEDIR=/tmp/kube-cache
+
 if [ -n "$KUBECONFIG_BASE64" ]; then
     echo "[kube] Injected KUBECONFIG_BASE64 detected. Writing to /root/.kube/config..."
-    echo "$KUBECONFIG_BASE64" | base64 -d > /root/.kube/config
-    chmod 600 /root/.kube/config
+    mkdir -p /root/.kube 2>/dev/null || true
+    echo "$KUBECONFIG_BASE64" | base64 -d > /root/.kube/config 2>/dev/null || echo "[kube] Notice: /root/.kube is read-only mounted."
 elif [ -n "$KUBECONFIG_RAW" ]; then
     echo "[kube] Injected KUBECONFIG_RAW detected. Writing to /root/.kube/config..."
-    echo "$KUBECONFIG_RAW" > /root/.kube/config
-    chmod 600 /root/.kube/config
+    mkdir -p /root/.kube 2>/dev/null || true
+    echo "$KUBECONFIG_RAW" > /root/.kube/config 2>/dev/null || echo "[kube] Notice: /root/.kube is read-only mounted."
 fi
 
 if [ -f "/root/.kube/config" ]; then
     echo "[kube] Kubeconfig available. Current cluster context:"
     kubectl config current-context 2>/dev/null || echo "[kube] Context not active."
 else
-    echo "[kube] Warning: /root/.kube/config not found. Mount ~/.kube:/root/.kube or provide KUBECONFIG_BASE64."
+    echo "[kube] Warning: /root/.kube/config not found. Mount ~/.kube:/root/.kube:ro or provide KUBECONFIG_BASE64."
 fi
 
 # 6. Verify Host Repository Mount

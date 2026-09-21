@@ -46,13 +46,15 @@ services:
       - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-gemini-3.1-pro-preview[1m]}
       - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-gemini-3.8-flash[1m]}
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-gemini-3.5-flash-lite[1m]}
+      # Redirect kubectl cache to writable in-container directory (handles read-only ~/.kube mount)
+      - KUBECACHEDIR=/tmp/kube-cache
     volumes:
       # Host Git repository mounted into container workspace
       - ${HOST_REPO_PATH:-./workspace}:/workspace
       # Claude Code persistent credentials and conversation sessions
       - claude_sessions:/root/.claude
-      # Kubernetes kubeconfig and cluster authentication tokens
-      - kube_data:/root/.kube
+      # Host Kubernetes configuration mounted as read-only
+      - ${HOST_KUBE_PATH:-~/.kube}:/root/.kube:ro
       # Docker daemon socket to build and push images
       - /var/run/docker.sock:/var/run/docker.sock
       # Docker CLI credentials cache (docker login)
@@ -71,7 +73,5 @@ volumes:
     name: heimdall_bifrost_data
   claude_sessions:
     name: heimdall_claude_sessions
-  kube_data:
-    name: heimdall_kube_data
   docker_data:
     name: heimdall_docker_data
