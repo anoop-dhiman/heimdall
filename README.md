@@ -95,7 +95,11 @@ To edit credentials later:
 
 | Command | Description |
 |---|---|
-| `/status` | View agent status, Git branch/commit, Kubernetes context, and Docker daemon state |
-| `/new` | Clear conversation context and start a fresh session |
+| `/sessions` | Interactive session manager with inline buttons to switch, create, and delete Claude sessions |
+| `/switch <name>` | Switch active conversation to a session by name (e.g. `/switch k8s-debug`) |
+| `/new [name]` | Reset active session, or create and switch to a new named session (`/new <name>`) |
+| `/current` | Display details for the active session (name, Claude session ID, last active) |
+| `/delete [name]` | Delete a saved session (or open the delete picker menu) |
+| `/status` | View task, active session, Git branch/commit, Kubernetes context, and Docker state |
 | `/cancel` | Abort currently running task |
 | `/help` | Show command menu and usage instructions |

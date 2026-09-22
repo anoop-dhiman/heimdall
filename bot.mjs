@@ -5,6 +5,7 @@ import { spawn, execSync } from 'node:child_process';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SessionManager } from './session-manager.mjs';
 
 // ---------------------------------------------------------------------------
 // Configuration & Environment Setup
@@ -32,20 +33,24 @@ console.log('----------------------------------------------------');
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// In-memory session tracking per chat
-// Map<chatId, { sessionId: string|null, runningProcess: ChildProcess|null, isCanceling: boolean, progressUpdater: ProgressUpdater|null }>
-const chatSessions = new Map();
+// Persistent multi-session manager
+const SESSIONS_DIR = process.env.SESSIONS_DIR || path.join(process.env.HOME || '/home/node', '.claude');
+const SESSIONS_FILE = path.join(SESSIONS_DIR, 'telegram-sessions.json');
+const sessionManager = new SessionManager(SESSIONS_FILE);
 
-function getSession(chatId) {
-  if (!chatSessions.has(chatId)) {
-    chatSessions.set(chatId, {
-      sessionId: null,
+// In-memory runtime execution tracking per chat
+// Map<chatId, { runningProcess: ChildProcess|null, isCanceling: boolean, progressUpdater: ProgressUpdater|null }>
+const chatRuntimes = new Map();
+
+function getRuntime(chatId) {
+  if (!chatRuntimes.has(chatId)) {
+    chatRuntimes.set(chatId, {
       runningProcess: null,
       isCanceling: false,
       progressUpdater: null,
     });
   }
-  return chatSessions.get(chatId);
+  return chatRuntimes.get(chatId);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +162,82 @@ function getSystemStatus() {
 }
 
 // ---------------------------------------------------------------------------
+// Sessions View Builders (Keyboards & Messages)
+// ---------------------------------------------------------------------------
+function buildSessionsView(chatId) {
+  const sessions = sessionManager.list(chatId);
+  const active = sessionManager.getActive(chatId);
+
+  let text = `📂 *Claude Sessions Manager*\n\n`;
+  text += `Active Session: *${escapeMarkdown(active.name)}*\n\n`;
+
+  for (const s of sessions) {
+    const icon = s.isActive ? '🟢' : '⚪';
+    const idLabel = s.id ? `\`${s.id.slice(0, 8)}...\`` : '_New (no messages)_';
+    const activeBadge = s.isActive ? ' *(Active)*' : '';
+    text += `${icon} *${escapeMarkdown(s.name)}*${activeBadge}\n`;
+    text += `   ID: ${idLabel}\n`;
+  }
+
+  text += `\n_Tap a session below to switch to it:_`;
+
+  const inline_keyboard = [];
+  let currentRow = [];
+
+  for (const s of sessions) {
+    const icon = s.isActive ? '🟢 ' : '';
+    currentRow.push({
+      text: `${icon}${s.name}`,
+      callback_data: `switch_sess:${s.name}`,
+    });
+    if (currentRow.length === 2) {
+      inline_keyboard.push(currentRow);
+      currentRow = [];
+    }
+  }
+  if (currentRow.length > 0) {
+    inline_keyboard.push(currentRow);
+  }
+
+  // Management controls row
+  inline_keyboard.push([
+    { text: '➕ New Session', callback_data: 'prompt_new_sess' },
+    { text: '🗑️ Delete', callback_data: 'del_sess_menu' },
+    { text: '🔄 Refresh', callback_data: 'refresh_sess' },
+  ]);
+
+  return { text, reply_markup: { inline_keyboard } };
+}
+
+function buildDeleteView(chatId) {
+  const sessions = sessionManager.list(chatId);
+  let text = `🗑️ *Delete a Session*\n\nTap a session to delete it:\n_(If you delete the active session, Heimdall will switch to another session)_`;
+
+  const inline_keyboard = [];
+  let currentRow = [];
+
+  for (const s of sessions) {
+    currentRow.push({
+      text: `❌ ${s.name}`,
+      callback_data: `confirm_del_sess:${s.name}`,
+    });
+    if (currentRow.length === 2) {
+      inline_keyboard.push(currentRow);
+      currentRow = [];
+    }
+  }
+  if (currentRow.length > 0) {
+    inline_keyboard.push(currentRow);
+  }
+
+  inline_keyboard.push([
+    { text: '⬅️ Back to Sessions', callback_data: 'refresh_sess' },
+  ]);
+
+  return { text, reply_markup: { inline_keyboard } };
+}
+
+// ---------------------------------------------------------------------------
 // Throttled Progress Streaming Class
 // ---------------------------------------------------------------------------
 class ProgressUpdater {
@@ -241,9 +322,7 @@ class ProgressUpdater {
       );
     } catch (err) {
       const msg = err.message || '';
-      // Ignore if message wasn't modified or temporary rate limit
       if (!msg.includes('message is not modified')) {
-        // If markdown formatting failed, fallback to plain text
         if (msg.includes('can\'t parse entities')) {
           await this.ctx.telegram
             .editMessageText(
@@ -298,9 +377,13 @@ bot.command(['start', 'help'], async (ctx) => {
 I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send me instructions and I will inspect Kubernetes, build & push Docker images, edit code, and deploy Helm charts directly from Telegram.
 
 *Available Commands:*
-• /new - Reset session (starts a fresh Claude conversation context)
+• /sessions - List and switch between sessions (interactive buttons)
+• /switch <name> - Switch active session by name
+• /new [name] - Clear active session, or create a new named session (\`/new <name>\`)
+• /current - View active session details
+• /delete [name] - Delete a saved session
 • /cancel - Abort currently running task
-• /status - View task, Git, Kubernetes, and Docker status
+• /status - View task, Git, Kubernetes, Docker, and session status
 • /help - Display this help guide
 
 *Examples:*
@@ -312,39 +395,136 @@ I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send 
   await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
 });
 
-// /new: Reset session context
+// /sessions: List all sessions with inline keyboard
+bot.command('sessions', async (ctx) => {
+  const view = buildSessionsView(ctx.chat.id);
+  await ctx.reply(view.text, {
+    parse_mode: 'Markdown',
+    reply_markup: view.reply_markup,
+  });
+});
+
+// /switch <name>: Switch session by name
+bot.command('switch', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.reply('⚠️ A task is currently running. Please wait or use /cancel first before switching sessions.');
+  }
+
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const targetName = parts[1];
+
+  if (!targetName) {
+    const view = buildSessionsView(ctx.chat.id);
+    return ctx.reply(`ℹ️ *Usage:* \`/switch <session-name>\`\n\n${view.text}`, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  const res = sessionManager.switch(ctx.chat.id, targetName);
+  if (!res.success) {
+    return ctx.reply(`❌ ${res.error}\nUse /sessions to view sessions or \`/new ${targetName}\` to create it.`);
+  }
+
+  const idStr = res.session.id ? `\`${res.session.id.slice(0, 8)}...\`` : '_New (no messages yet)_';
+  await ctx.reply(`🟢 *Switched to session "${escapeMarkdown(res.session.name)}"* (ID: ${idStr}).\nAll subsequent messages will resume this conversation.`, {
+    parse_mode: 'Markdown',
+  });
+});
+
+// /new [name]: Start a fresh conversation or create named session
 bot.command('new', async (ctx) => {
-  const session = getSession(ctx.chat.id);
-  if (session.runningProcess) {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
     return ctx.reply(
-      '⚠️ A task is currently running. Please cancel it first with /cancel before resetting the session.'
+      '⚠️ A task is currently running. Please cancel it first with /cancel before resetting or creating a session.'
     );
   }
 
-  const oldId = session.sessionId;
-  session.sessionId = null;
-  console.log(`[session] Reset session for chat ${ctx.chat.id} (previous: ${oldId || 'none'})`);
-  await ctx.reply('✨ *Session reset.* Conversation context has been cleared. The next message will begin a fresh session.', {
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const nameArg = parts.slice(1).join(' ').trim();
+
+  if (nameArg) {
+    const res = sessionManager.create(ctx.chat.id, nameArg);
+    if (res.existed) {
+      return ctx.reply(`🟢 Session "*${escapeMarkdown(res.name)}*" already exists. Switched to it.`, {
+        parse_mode: 'Markdown',
+      });
+    }
+    return ctx.reply(`✨ *Created and switched to new session: "${escapeMarkdown(res.name)}"*.\nYour next message will begin this conversation context.`, {
+      parse_mode: 'Markdown',
+    });
+  }
+
+  // If no name provided, reset active session's context
+  const activeName = sessionManager.resetActiveContext(ctx.chat.id);
+  console.log(`[session] Reset active session "${activeName}" for chat ${ctx.chat.id}`);
+  await ctx.reply(`✨ *Session reset.* Active session "*${escapeMarkdown(activeName)}*" context has been cleared. The next message will begin a fresh conversation.\n\n💡 *Tip:* Use \`/new <name>\` (e.g. \`/new k8s-debug\`) to create a separate named session without clearing this one.`, {
+    parse_mode: 'Markdown',
+  });
+});
+
+// /current: View details of active session
+bot.command('current', async (ctx) => {
+  const active = sessionManager.getActive(ctx.chat.id);
+  const idStr = active.id ? `\`${active.id}\`` : '_None (New session)_';
+  const created = active.createdAt ? new Date(active.createdAt).toLocaleString() : 'Unknown';
+  const lastActive = active.lastActiveAt ? new Date(active.lastActiveAt).toLocaleString() : 'Unknown';
+
+  const msg = `📌 *Active Session:* *${escapeMarkdown(active.name)}*\n\n` +
+    `• *Claude Session ID:* ${idStr}\n` +
+    `• *Created:* ${created}\n` +
+    `• *Last Active:* ${lastActive}\n\n` +
+    `_Use /sessions to view all sessions or /switch <name> to switch._`;
+
+  await ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+// /delete [name]: Delete a session
+bot.command('delete', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.reply('⚠️ A task is currently running. Please cancel it first with /cancel.');
+  }
+
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const nameArg = parts[1];
+
+  if (!nameArg) {
+    const view = buildDeleteView(ctx.chat.id);
+    return ctx.reply(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  const res = sessionManager.delete(ctx.chat.id, nameArg);
+  if (!res.success) {
+    return ctx.reply(`❌ ${res.error}`);
+  }
+
+  await ctx.reply(`🗑️ Session "*${escapeMarkdown(nameArg)}*" deleted.\nActive session is now "*${escapeMarkdown(res.activeSession)}*".`, {
     parse_mode: 'Markdown',
   });
 });
 
 // /cancel: Kill active Claude execution
 bot.command('cancel', async (ctx) => {
-  const session = getSession(ctx.chat.id);
-  if (!session.runningProcess) {
+  const runtime = getRuntime(ctx.chat.id);
+  if (!runtime.runningProcess) {
     return ctx.reply('ℹ️ No active task is running in this chat.');
   }
 
-  session.isCanceling = true;
-  console.log(`[session] Canceling process PID ${session.runningProcess.pid} for chat ${ctx.chat.id}`);
+  runtime.isCanceling = true;
+  console.log(`[session] Canceling process PID ${runtime.runningProcess.pid} for chat ${ctx.chat.id}`);
 
   try {
-    session.runningProcess.kill('SIGINT');
+    runtime.runningProcess.kill('SIGINT');
     setTimeout(() => {
-      if (session.runningProcess) {
+      if (runtime.runningProcess) {
         try {
-          session.runningProcess.kill('SIGKILL');
+          runtime.runningProcess.kill('SIGKILL');
         } catch {}
       }
     }, 2500);
@@ -352,8 +532,8 @@ bot.command('cancel', async (ctx) => {
     console.error('[cancel] Error signaling process:', err);
   }
 
-  if (session.progressUpdater) {
-    await session.progressUpdater.close('🛑 *Execution canceled by user.*');
+  if (runtime.progressUpdater) {
+    await runtime.progressUpdater.close('🛑 *Execution canceled by user.*');
   }
 
   await ctx.reply('🛑 Execution has been canceled.');
@@ -361,17 +541,21 @@ bot.command('cancel', async (ctx) => {
 
 // /status: Environment & state info
 bot.command('status', async (ctx) => {
-  const session = getSession(ctx.chat.id);
+  const runtime = getRuntime(ctx.chat.id);
+  const active = sessionManager.getActive(ctx.chat.id);
+  const allSessions = sessionManager.list(ctx.chat.id);
   const sys = getSystemStatus();
 
-  const isRunning = Boolean(session.runningProcess);
+  const isRunning = Boolean(runtime.runningProcess);
   const taskStatus = isRunning ? '🏃 *Running*' : '💤 *Idle*';
-  const sessionStatus = session.sessionId ? `\`${session.sessionId}\`` : '_None (New session)_';
+  const sessionStatus = active.id
+    ? `"${active.name}" (\`${active.id.slice(0, 8)}...\`)`
+    : `"${active.name}" _(New / empty context)_`;
 
   const statusMsg = `📊 *Heimdall Status*
 
 • *Task State:* ${taskStatus}
-• *Claude Session:* ${sessionStatus}
+• *Active Session:* ${sessionStatus} (${allSessions.length} total)
 • *Workspace:* \`${WORKSPACE_DIR}\`
 • *Git Branch:* \`${sys.gitBranch}\`
 • *Last Commit:* \`${sys.gitCommit}\`
@@ -384,6 +568,105 @@ bot.command('status', async (ctx) => {
 });
 
 // ---------------------------------------------------------------------------
+// Telegram Action Handlers (Inline Buttons)
+// ---------------------------------------------------------------------------
+bot.action(/^switch_sess:(.+)$/, async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.answerCbQuery('⚠️ A task is currently running. Wait or /cancel first.', { show_alert: true });
+  }
+
+  const targetName = ctx.match[1];
+  const res = sessionManager.switch(ctx.chat.id, targetName);
+  if (!res.success) {
+    return ctx.answerCbQuery(res.error, { show_alert: true });
+  }
+
+  await ctx.answerCbQuery(`Switched to "${res.session.name}"`);
+  const view = buildSessionsView(ctx.chat.id);
+  try {
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  } catch {}
+});
+
+bot.action('prompt_new_sess', async (ctx) => {
+  await ctx.answerCbQuery();
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '⚡ Auto-named Session', callback_data: 'create_auto_sess' }],
+      [{ text: '⬅️ Back to Sessions', callback_data: 'refresh_sess' }],
+    ],
+  };
+  try {
+    await ctx.editMessageText(
+      `➕ *Create a New Session*\n\nTo create a named session, send:\n\`/new <session-name>\` (e.g. \`/new k8s-debug\`)\n\nOr tap below to create an auto-named session:`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+  } catch {}
+});
+
+bot.action('create_auto_sess', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.answerCbQuery('⚠️ A task is currently running.', { show_alert: true });
+  }
+  const res = sessionManager.create(ctx.chat.id, '');
+  await ctx.answerCbQuery(`Created "${res.name}"`);
+  const view = buildSessionsView(ctx.chat.id);
+  try {
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  } catch {}
+});
+
+bot.action('del_sess_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const view = buildDeleteView(ctx.chat.id);
+  try {
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  } catch {}
+});
+
+bot.action(/^confirm_del_sess:(.+)$/, async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.answerCbQuery('⚠️ A task is currently running.', { show_alert: true });
+  }
+  const targetName = ctx.match[1];
+  const res = sessionManager.delete(ctx.chat.id, targetName);
+  if (!res.success) {
+    return ctx.answerCbQuery(res.error, { show_alert: true });
+  }
+  await ctx.answerCbQuery(`Deleted "${targetName}"`);
+  const view = buildSessionsView(ctx.chat.id);
+  try {
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  } catch {}
+});
+
+bot.action('refresh_sess', async (ctx) => {
+  await ctx.answerCbQuery('Refreshed');
+  const view = buildSessionsView(ctx.chat.id);
+  try {
+    await ctx.editMessageText(view.text, {
+      parse_mode: 'Markdown',
+      reply_markup: view.reply_markup,
+    });
+  } catch {}
+});
+
+// ---------------------------------------------------------------------------
 // Text Message Handler (Claude Execution)
 // ---------------------------------------------------------------------------
 bot.on('text', async (ctx) => {
@@ -393,17 +676,19 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  const session = getSession(ctx.chat.id);
-  if (session.runningProcess) {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
     return ctx.reply('⏳ A task is already in progress. Use /cancel to abort it, or wait for it to finish.');
   }
 
-  session.isCanceling = false;
+  runtime.isCanceling = false;
 
-  // Send initial progress message
-  const statusMsg = await ctx.reply('🚀 *Starting Claude Code...*', { parse_mode: 'Markdown' });
+  const activeSession = sessionManager.getActive(ctx.chat.id);
+
+  // Send initial progress message indicating active session
+  const statusMsg = await ctx.reply(`🚀 *Starting Claude Code...* [_${escapeMarkdown(activeSession.name)}_]`, { parse_mode: 'Markdown' });
   const updater = new ProgressUpdater(ctx, statusMsg.message_id);
-  session.progressUpdater = updater;
+  runtime.progressUpdater = updater;
 
   // Typing indicator interval (sends action every 4 seconds)
   const typingInterval = setInterval(() => {
@@ -412,7 +697,6 @@ bot.on('text', async (ctx) => {
   ctx.sendChatAction('typing').catch(() => {});
 
   // Build command arguments
-  // Command structure: claude -p "$prompt" --output-format stream-json --bare --dangerously-skip-permissions --permission-prompts none
   const args = [
     '-p',
     text,
@@ -443,11 +727,11 @@ bot.on('text', async (ctx) => {
     args.push('--append-system-prompt-file', safetyPromptPath);
   }
 
-  if (session.sessionId) {
-    args.push('--resume', session.sessionId);
-    console.log(`[claude] Resuming existing session: ${session.sessionId}`);
+  if (activeSession.id) {
+    args.push('--resume', activeSession.id);
+    console.log(`[claude] Resuming session "${activeSession.name}": ${activeSession.id}`);
   } else {
-    console.log('[claude] Starting new session');
+    console.log(`[claude] Starting new session "${activeSession.name}"`);
   }
 
   const startTime = Date.now();
@@ -475,12 +759,12 @@ bot.on('text', async (ctx) => {
     });
   } catch (err) {
     clearInterval(typingInterval);
-    session.progressUpdater = null;
+    runtime.progressUpdater = null;
     await updater.close('❌ *Failed to spawn Claude process.*');
     return ctx.reply(`❌ Failed to start Claude CLI: ${err.message}`);
   }
 
-  session.runningProcess = child;
+  runtime.runningProcess = child;
 
   // Parse stream-json from stdout line by line
   const rl = readline.createInterface({
@@ -574,8 +858,8 @@ bot.on('text', async (ctx) => {
   child.on('error', async (err) => {
     console.error('[claude] Process error:', err);
     clearInterval(typingInterval);
-    session.runningProcess = null;
-    session.progressUpdater = null;
+    runtime.runningProcess = null;
+    runtime.progressUpdater = null;
     await updater.close('❌ *Process encountered an error.*');
     await ctx.reply(`❌ Execution error: ${err.message}`);
   });
@@ -583,15 +867,15 @@ bot.on('text', async (ctx) => {
   child.on('close', async (code, signal) => {
     clearInterval(typingInterval);
     const durationSec = ((Date.now() - startTime) / 1000).toFixed(1);
-    const wasCanceled = session.isCanceling || signal === 'SIGINT' || signal === 'SIGTERM';
+    const wasCanceled = runtime.isCanceling || signal === 'SIGINT' || signal === 'SIGTERM';
 
-    session.runningProcess = null;
-    session.progressUpdater = null;
-    session.isCanceling = false;
+    runtime.runningProcess = null;
+    runtime.progressUpdater = null;
+    runtime.isCanceling = false;
 
     if (detectedSessionId) {
-      session.sessionId = detectedSessionId;
-      console.log(`[session] Saved session ID: ${detectedSessionId}`);
+      sessionManager.updateClaudeId(ctx.chat.id, activeSession.name, detectedSessionId);
+      console.log(`[session] Saved session ID ${detectedSessionId} for session "${activeSession.name}"`);
     }
 
     if (wasCanceled) {
@@ -599,12 +883,7 @@ bot.on('text', async (ctx) => {
       return;
     }
 
-    // Determine the response text in order of priority:
-    // 1. finalResultText (if present and non-empty)
-    // 2. latestAssistantText (in multi-tool runs, the last assistant message is the final answer)
-    // 3. allAssistantTexts combined (if multiple assistant comments)
-    // 4. streamedText (if incremental token stream captured)
-    // 5. nonJsonOutput (raw stdout fallback)
+    // Determine response text in order of priority
     let outputText = '';
     if (finalResultText && finalResultText.trim()) {
       outputText = finalResultText.trim();
@@ -633,8 +912,6 @@ bot.on('text', async (ctx) => {
     await updater.close(`✅ *Completed in ${durationSec}s*`);
 
     // Handle message delivery with smart splitting
-    // For outputs up to 12,000 characters (~3 Telegram messages), send directly in chat.
-    // For truly massive outputs (>12,000 characters), send as .md attachment with preview.
     const MAX_CHAT_LENGTH = parseInt(process.env.MAX_CHAT_MESSAGE_LENGTH || '12000', 10);
 
     if (outputText.length <= MAX_CHAT_LENGTH) {
@@ -725,25 +1002,30 @@ async function sendSafeTelegramMessage(ctx, text) {
 // ---------------------------------------------------------------------------
 const shutdown = (signal) => {
   console.log(`\n[bot] Received ${signal}. Terminating any running child processes...`);
-  for (const [chatId, session] of chatSessions.entries()) {
-    if (session.runningProcess) {
+  for (const [chatId, runtime] of chatRuntimes.entries()) {
+    if (runtime.runningProcess) {
       console.log(`[bot] Killing active process for chat ${chatId}`);
       try {
-        session.runningProcess.kill('SIGTERM');
+        runtime.runningProcess.kill('SIGKILL');
       } catch {}
     }
   }
-  bot.stop(signal);
   process.exit(0);
 };
 
-process.once('SIGINT', () => shutdown('SIGINT'));
-process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-// Launch the bot
-bot.launch().then(() => {
-  console.log('🚀 Telegram Bot is online and listening for messages!');
-}).catch((err) => {
-  console.error('FATAL: Failed to launch Telegram Bot:', err);
-  process.exit(1);
-});
+// ---------------------------------------------------------------------------
+// Launch Bot
+// ---------------------------------------------------------------------------
+bot.launch({
+  dropPendingUpdates: true,
+})
+  .then(() => {
+    console.log('🚀 Heimdall Bot is online and listening for Telegram updates via long-polling.');
+  })
+  .catch((err) => {
+    console.error('FATAL: Bot failed to start:', err);
+    process.exit(1);
+  });
