@@ -65,6 +65,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY bot.mjs ./
+COPY session-manager.mjs ./
 COPY entrypoint.sh ./
 COPY safety-prompt.txt ./
 RUN chmod +x /app/entrypoint.sh
