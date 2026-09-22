@@ -1017,13 +1017,30 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // ---------------------------------------------------------------------------
-// Launch Bot
+// Launch Bot & Auto-Register Telegram Command Menu
 // ---------------------------------------------------------------------------
 bot.launch({
   dropPendingUpdates: true,
 })
-  .then(() => {
+  .then(async () => {
     console.log('🚀 Heimdall Bot is online and listening for Telegram updates via long-polling.');
+
+    // Automatically configure Telegram's slash command menu in the chat UI
+    try {
+      await bot.telegram.setMyCommands([
+        { command: 'sessions', description: 'List and switch sessions (interactive buttons)' },
+        { command: 'switch', description: 'Switch active session by name (/switch <name>)' },
+        { command: 'new', description: 'Reset context or create named session (/new [name])' },
+        { command: 'current', description: 'View active session details' },
+        { command: 'delete', description: 'Delete a saved session (/delete [name])' },
+        { command: 'status', description: 'View system, K8s, Docker, and session status' },
+        { command: 'cancel', description: 'Abort currently running task' },
+        { command: 'help', description: 'Display command menu and examples' },
+      ]);
+      console.log('📋 Telegram bot commands automatically registered with Telegram API.');
+    } catch (cmdErr) {
+      console.warn('[bot] Notice: Could not register command menu with Telegram:', cmdErr.message);
+    }
   })
   .catch((err) => {
     console.error('FATAL: Bot failed to start:', err);
