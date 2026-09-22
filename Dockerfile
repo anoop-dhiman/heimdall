@@ -48,11 +48,16 @@ RUN curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/s
 # 5. Install Claude Code CLI globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# 6. Configure non-root user (node: UID 1000) with passwordless sudo & docker group
+# 6. Configure non-root user (node: matching host UID/GID) with passwordless sudo & docker group
 # Claude Code blocks --dangerously-skip-permissions if executed by root (UID 0)
-RUN groupadd -g 999 docker 2>/dev/null || groupadd docker 2>/dev/null || true \
+ARG UID=1001
+ARG GID=1001
+RUN (groupmod -g ${GID} node 2>/dev/null || groupadd -g ${GID} node 2>/dev/null || true) \
+    && (usermod -u ${UID} -g ${GID} node 2>/dev/null || true) \
+    && (groupadd -g 999 docker 2>/dev/null || groupadd docker 2>/dev/null || true) \
     && usermod -aG sudo,docker node \
-    && echo "node ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "node ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+    && chown -R node:node /home/node
 
 # 7. Setup App directory
 WORKDIR /app
