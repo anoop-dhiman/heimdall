@@ -98,6 +98,7 @@ To edit credentials later:
 | `/sessions` | Interactive session manager with inline buttons to switch, create, and delete Claude sessions |
 | `/switch <name>` | Switch active conversation to a session by name (e.g. `/switch k8s-debug`) |
 | `/new [name]` | Reset active session, or create and switch to a new named session (`/new <name>`) |
+| `/compact [focus]` | Compact conversation context to summarize history and free memory/tokens |
 | `/current` | Display details for the active session (name, Claude session ID, last active) |
 | `/delete [name]` | Delete a saved session (or open the delete picker menu) |
 | `/status` | View task, active session, Git branch/commit, Kubernetes context, and Docker state |

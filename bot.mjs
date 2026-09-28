@@ -564,6 +564,7 @@ I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send 
 • /sessions - List and switch between sessions (interactive buttons)
 • /switch <name> - Switch active session by name
 • /new [name] - Clear active session, or create a new named session (\`/new <name>\`)
+• /compact [focus] - Compact conversation context to reduce memory and tokens
 • /current - View active session details
 • /delete [name] - Delete a saved session
 • /cancel - Abort currently running task
@@ -575,6 +576,7 @@ I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send 
 • "Inspect the git diff and summarize recent changes"
 • "Build and push the docker image tagged myrepo/app:v1.0"
 • "Deploy helm upgrade for the web service"
+• "/compact focus on Kubernetes cluster debugging"
 `;
   await ctx.reply(helpMessage, { parse_mode: 'Markdown' });
 });
@@ -691,6 +693,29 @@ bot.command('delete', async (ctx) => {
   await ctx.reply(`🗑️ Session "*${escapeMarkdown(nameArg)}*" deleted.\nActive session is now "*${escapeMarkdown(res.activeSession)}*".`, {
     parse_mode: 'Markdown',
   });
+});
+
+// /compact [instructions]: Compact active session context
+bot.command('compact', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.runningProcess) {
+    return ctx.reply('⏳ A task is already in progress. Use /cancel to abort it, or wait for it to finish.');
+  }
+
+  const activeSession = sessionManager.getActive(ctx.chat.id);
+  if (!activeSession.id) {
+    return ctx.reply(`ℹ️ Session "*${escapeMarkdown(activeSession.name)}*" does not have any conversation history yet to compact.`);
+  }
+
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const instructions = parts.slice(1).join(' ').trim();
+  const prompt = instructions ? `/compact ${instructions}` : '/compact';
+
+  await executeClaudePrompt(
+    ctx,
+    prompt,
+    `🧹 *Compacting conversation context...* [_${escapeMarkdown(activeSession.name)}_]`
+  );
 });
 
 // /cancel: Kill active Claude execution
@@ -851,15 +876,9 @@ bot.action('refresh_sess', async (ctx) => {
 });
 
 // ---------------------------------------------------------------------------
-// Text Message Handler (Claude Execution)
+// Claude CLI Execution Engine
 // ---------------------------------------------------------------------------
-bot.on('text', async (ctx) => {
-  const text = ctx.message.text.trim();
-  if (text.startsWith('/')) {
-    // Ignore unhandled commands
-    return;
-  }
-
+async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) {
   const runtime = getRuntime(ctx.chat.id);
   if (runtime.runningProcess) {
     return ctx.reply('⏳ A task is already in progress. Use /cancel to abort it, or wait for it to finish.');
@@ -870,7 +889,8 @@ bot.on('text', async (ctx) => {
   const activeSession = sessionManager.getActive(ctx.chat.id);
 
   // Send initial progress message indicating active session
-  const statusMsg = await ctx.reply(`🚀 *Starting Claude Code...* [_${escapeMarkdown(activeSession.name)}_]`, { parse_mode: 'Markdown' });
+  const defaultStatus = `🚀 *Starting Claude Code...* [_${escapeMarkdown(activeSession.name)}_]`;
+  const statusMsg = await ctx.reply(customInitialStatus || defaultStatus, { parse_mode: 'Markdown' });
   const updater = new ProgressUpdater(ctx, statusMsg.message_id);
   runtime.progressUpdater = updater;
 
@@ -883,7 +903,7 @@ bot.on('text', async (ctx) => {
   // Build command arguments
   const args = [
     '-p',
-    text,
+    promptText,
     '--output-format',
     'stream-json',
     '--verbose',
@@ -1130,6 +1150,31 @@ bot.on('text', async (ctx) => {
       }
     }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Text Message Handler (Claude Execution)
+// ---------------------------------------------------------------------------
+bot.on('text', async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (text.startsWith('/')) {
+    // If user sent a slash command not explicitly intercepted by Telegraf commands:
+    if (text.startsWith('/compact')) {
+      const activeSession = sessionManager.getActive(ctx.chat.id);
+      if (!activeSession.id) {
+        return ctx.reply(`ℹ️ Session "*${escapeMarkdown(activeSession.name)}*" does not have any conversation history yet to compact.`);
+      }
+      return executeClaudePrompt(
+        ctx,
+        text,
+        `🧹 *Compacting conversation context...* [_${escapeMarkdown(activeSession.name)}_]`
+      );
+    }
+    // Forward any other Claude slash command or skill (e.g. /doctor, /init)
+    return executeClaudePrompt(ctx, text);
+  }
+
+  await executeClaudePrompt(ctx, text);
 });
 
 // Smart paragraph & line boundary chunker for Telegram messages
@@ -1215,6 +1260,7 @@ bot.launch({
         { command: 'sessions', description: 'List and switch sessions (interactive buttons)' },
         { command: 'switch', description: 'Switch active session by name (/switch <name>)' },
         { command: 'new', description: 'Reset context or create named session (/new [name])' },
+        { command: 'compact', description: 'Compact conversation context (/compact [focus])' },
         { command: 'current', description: 'View active session details' },
         { command: 'delete', description: 'Delete a saved session (/delete [name])' },
         { command: 'status', description: 'View system, K8s, Docker, and session status' },
