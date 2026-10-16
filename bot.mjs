@@ -232,6 +232,7 @@ function getRuntime(chatId) {
       runningProcess: null,
       isCanceling: false,
       progressUpdater: null,
+      queue: [],
     });
   }
   return chatRuntimes.get(chatId);
@@ -568,6 +569,9 @@ I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send 
 • /current - View active session details
 • /delete [name] - Delete a saved session
 • /cancel - Abort currently running task
+• /cancelall - Abort running task and clear the entire queue
+• /queue - View queued messages
+• /clearqueue - Cancel all queued messages
 • /status - View task, Git, Kubernetes, Docker, and session status
 • /help - Display this help guide
 
@@ -745,7 +749,70 @@ bot.command('cancel', async (ctx) => {
     await runtime.progressUpdater.close('🛑 *Execution canceled by user.*');
   }
 
-  await ctx.reply('🛑 Execution has been canceled.');
+  const queueLen = runtime.queue.length;
+  const queueNote = queueLen > 0 ? ` ${queueLen} queued message(s) will run next. Use /clearqueue to discard them.` : '';
+  await ctx.reply(`🛑 Execution has been canceled.${queueNote}`);
+});
+
+// /cancelall: Kill active task and flush the entire queue
+bot.command('cancelall', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  const hadProcess = Boolean(runtime.runningProcess);
+  const queueCount = runtime.queue.length;
+
+  if (!hadProcess && queueCount === 0) {
+    return ctx.reply('ℹ️ Nothing is running and the queue is empty.');
+  }
+
+  runtime.queue = [];
+
+  if (hadProcess) {
+    runtime.isCanceling = true;
+    console.log(`[session] cancelall: killing PID ${runtime.runningProcess.pid} for chat ${ctx.chat.id}`);
+    try {
+      runtime.runningProcess.kill('SIGINT');
+      setTimeout(() => {
+        if (runtime.runningProcess) {
+          try { runtime.runningProcess.kill('SIGKILL'); } catch {}
+        }
+      }, 2500);
+    } catch (err) {
+      console.error('[cancelall] Error signaling process:', err);
+    }
+    if (runtime.progressUpdater) {
+      await runtime.progressUpdater.close('🛑 *Execution canceled by user.*');
+    }
+  }
+
+  const parts = [];
+  if (hadProcess) parts.push('running task canceled');
+  if (queueCount > 0) parts.push(`${queueCount} queued message(s) cleared`);
+  await ctx.reply(`🛑 ${parts.join(' and ').replace(/^./, (c) => c.toUpperCase())}.`);
+});
+
+// /queue: Show pending queued messages
+bot.command('queue', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  if (runtime.queue.length === 0) {
+    return ctx.reply('📭 No messages in queue.');
+  }
+  let msg = `📋 *Message Queue* (${runtime.queue.length} pending):\n\n`;
+  runtime.queue.forEach((item, i) => {
+    msg += `${i + 1}\\. ${escapeMarkdown(truncateString(item.promptText, 80))}\n`;
+  });
+  msg += '\n_Use /clearqueue to cancel all queued messages\\._';
+  await ctx.reply(msg, { parse_mode: 'MarkdownV2' });
+});
+
+// /clearqueue: Flush all queued messages
+bot.command('clearqueue', async (ctx) => {
+  const runtime = getRuntime(ctx.chat.id);
+  const count = runtime.queue.length;
+  if (count === 0) {
+    return ctx.reply('📭 Queue is already empty.');
+  }
+  runtime.queue = [];
+  await ctx.reply(`🗑️ Cleared ${count} queued message(s).`);
 });
 
 // /status: Environment & state info
@@ -878,10 +945,20 @@ bot.action('refresh_sess', async (ctx) => {
 // ---------------------------------------------------------------------------
 // Claude CLI Execution Engine
 // ---------------------------------------------------------------------------
+function drainQueue(chatId) {
+  const runtime = getRuntime(chatId);
+  if (runtime.queue.length > 0) {
+    const next = runtime.queue.shift();
+    executeClaudePrompt(next.ctx, next.promptText, next.customInitialStatus);
+  }
+}
+
 async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) {
   const runtime = getRuntime(ctx.chat.id);
   if (runtime.runningProcess) {
-    return ctx.reply('⏳ A task is already in progress. Use /cancel to abort it, or wait for it to finish.');
+    runtime.queue.push({ ctx, promptText, customInitialStatus });
+    const pos = runtime.queue.length;
+    return ctx.reply(`⏳ Queued at position ${pos}. Your message will run after the current task finishes. Use /queue to view or /clearqueue to cancel all queued messages.`);
   }
 
   runtime.isCanceling = false;
@@ -1084,6 +1161,7 @@ async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) 
 
     if (wasCanceled) {
       await updater.close('🛑 *Execution canceled.*');
+      drainQueue(ctx.chat.id);
       return;
     }
 
@@ -1104,9 +1182,11 @@ async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) 
     if (code !== 0 && !outputText) {
       await updater.close(`❌ *Claude exited with code ${code}* (${durationSec}s)`);
       const errDetails = stderrBuffer.trim() || 'No stderr details captured.';
-      return ctx.reply(`⚠️ *Execution Failed (Exit Code ${code}):*\n\`\`\`\n${truncateString(errDetails, 1000)}\n\`\`\``, {
+      await ctx.reply(`⚠️ *Execution Failed (Exit Code ${code}):*\n\`\`\`\n${truncateString(errDetails, 1000)}\n\`\`\``, {
         parse_mode: 'Markdown',
       });
+      drainQueue(ctx.chat.id);
+      return;
     }
 
     if (!outputText) {
@@ -1149,6 +1229,8 @@ async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) 
         }
       }
     }
+
+    drainQueue(ctx.chat.id);
   });
 }
 
@@ -1265,6 +1347,9 @@ bot.launch({
         { command: 'delete', description: 'Delete a saved session (/delete [name])' },
         { command: 'status', description: 'View system, K8s, Docker, and session status' },
         { command: 'cancel', description: 'Abort currently running task' },
+        { command: 'cancelall', description: 'Abort running task and clear the entire queue' },
+        { command: 'queue', description: 'View queued messages' },
+        { command: 'clearqueue', description: 'Cancel all queued messages' },
         { command: 'help', description: 'Display command menu and examples' },
       ]);
       console.log('📋 Telegram bot commands automatically registered with Telegram API.');

@@ -103,4 +103,7 @@ To edit credentials later:
 | `/delete [name]` | Delete a saved session (or open the delete picker menu) |
 | `/status` | View task, active session, Git branch/commit, Kubernetes context, and Docker state |
 | `/cancel` | Abort currently running task |
+| `/cancelall` | Abort running task and clear the entire queue |
+| `/queue` | View messages queued behind the running task |
+| `/clearqueue` | Cancel all queued messages |
 | `/help` | Show command menu and usage instructions |
