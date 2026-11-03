@@ -34,7 +34,7 @@ A self-contained DevOps & engineering agent powered by **Claude Code CLI** and d
 ## Features
 
 - **ChatOps via Telegram**: Command Claude Code from mobile or desktop Telegram using long-polling (no open ports or webhooks required).
-- **Gemini via Bifrost**: Routes Claude Code through local Bifrost sidecar to Google Gemini models (`gemini-3.8-flash`, `gemini-3.1-pro-preview`).
+- **Gemini via Bifrost**: Routes Claude Code through local Bifrost sidecar to Google Gemini models (`gemini-3.8-flash`, `gemini-4-argon`).
 - **DevOps Toolchain**: Pre-installed `docker`, `kubectl`, `helm 3`, `node 22`, `git`, and `python3`.
 - **Host Git Mounting**: Mounts your repository from host (`HOST_REPO_PATH`).
 - **Container-Isolated PAT**: `GIT_PAT` is stored strictly inside container memory/config (`/root/.git-credentials`) and never touches the host's `.git/config`.
@@ -99,7 +99,8 @@ To edit credentials later:
 | `/switch <name>` | Switch active conversation to a session by name (e.g. `/switch k8s-debug`) |
 | `/new [name]` | Reset active session, or create and switch to a new named session (`/new <name>`) |
 | `/compact [focus]` | Compact conversation context to summarize history and free memory/tokens |
-| `/current` | Display details for the active session (name, Claude session ID, last active) |
+| `/model [alias]` | Show or pin the model for the active session (`/model opus`, `/model clear`) |
+| `/current` | Display details for the active session (name, Claude session ID, model, last active) |
 | `/delete [name]` | Delete a saved session (or open the delete picker menu) |
 | `/status` | View task, active session, Git branch/commit, Kubernetes context, and Docker state |
 | `/cancel` | Abort currently running task |

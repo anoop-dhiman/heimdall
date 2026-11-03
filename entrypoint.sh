@@ -26,8 +26,8 @@ cat <<EOF > "$USER_HOME/.claude/settings.json"
     "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
     "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}",
     "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY:-dummy-key}",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL": "${ANTHROPIC_DEFAULT_FABLE_MODEL:-gemini-3.1-pro-preview[1m]}",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${ANTHROPIC_DEFAULT_OPUS_MODEL:-gemini-3.1-pro-preview[1m]}",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL": "${ANTHROPIC_DEFAULT_FABLE_MODEL:-gemini-4-argon[1m]}",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${ANTHROPIC_DEFAULT_OPUS_MODEL:-gemini-4-argon[1m]}",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "${ANTHROPIC_DEFAULT_SONNET_MODEL:-gemini-3.8-flash[1m]}",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-gemini-3.5-flash-lite[1m]}"
   },
@@ -37,6 +37,16 @@ cat <<EOF > "$USER_HOME/.claude/settings.json"
   "model": "sonnet"
 }
 EOF
+# ANTHROPIC_DEFAULT_MODEL from .env applies to new sessions and to resumed ones.
+# A hardcoded model here would outrank that variable and keep the transcript model.
+if [ -n "${ANTHROPIC_DEFAULT_MODEL:-}" ]; then
+    tmp_settings=$(mktemp)
+    jq --arg m "$ANTHROPIC_DEFAULT_MODEL" \
+        '.env.ANTHROPIC_DEFAULT_MODEL = $m | .model = $m' \
+        "$USER_HOME/.claude/settings.json" > "$tmp_settings"
+    mv "$tmp_settings" "$USER_HOME/.claude/settings.json"
+    echo "[claude] Default model from ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL}"
+fi
 echo "[claude] Configured $USER_HOME/.claude/settings.json pointing to ${ANTHROPIC_BASE_URL:-http://bifrost:8080/anthropic}"
 
 # Auto-restore ~/.claude.json from volume backup if missing, or initialize cleanly

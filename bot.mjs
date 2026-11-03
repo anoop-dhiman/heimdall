@@ -98,6 +98,7 @@ class SessionManager {
     return Object.entries(chat.sessions).map(([name, s]) => ({
       name,
       id: s.id || null,
+      model: s.model || null,
       isActive: name === chat.activeSession,
       createdAt: s.createdAt,
       lastActiveAt: s.lastActiveAt,
@@ -179,6 +180,22 @@ class SessionManager {
     }
   }
 
+  setModel(chatId, sessionName, model) {
+    const chat = this.ensureChat(chatId);
+    const name = this.sanitizeName(sessionName) || chat.activeSession;
+    if (!chat.sessions[name]) {
+      return { success: false, error: `Session "${name}" does not exist.` };
+    }
+    if (model) {
+      chat.sessions[name].model = model;
+    } else {
+      delete chat.sessions[name].model;
+    }
+    chat.sessions[name].lastActiveAt = new Date().toISOString();
+    this.save();
+    return { success: true, name, model: chat.sessions[name].model || null };
+  }
+
   resetActiveContext(chatId) {
     const chat = this.ensureChat(chatId);
     if (chat.sessions[chat.activeSession]) {
@@ -212,6 +229,7 @@ const allowedUserIds = (process.env.ALLOWED_TELEGRAM_USER_IDS || '')
 console.log('----------------------------------------------------');
 console.log('🤖 Starting Claude Remote Dev Agent Telegram Bot');
 console.log(`📂 Workspace Directory: ${WORKSPACE_DIR}`);
+console.log(`🧠 Default model: ${envDefaultModel() || 'sonnet (built-in)'} (override a session with /model)`);
 console.log(`🔒 Allowed User IDs: ${allowedUserIds.length > 0 ? allowedUserIds.join(', ') : 'ALL (WARNING: Open access!)'}`);
 console.log('----------------------------------------------------');
 
@@ -267,6 +285,26 @@ function escapeMarkdown(text) {
   if (!text) return '';
   return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
+
+function envDefaultModel() {
+  return (process.env.ANTHROPIC_DEFAULT_MODEL || '').trim();
+}
+
+function modelForLaunch(session) {
+  const pinned = (session?.model || '').trim();
+  if (pinned) return pinned;
+  return envDefaultModel();
+}
+
+function describeModel(session) {
+  const pinned = (session?.model || '').trim();
+  if (pinned) return `${pinned} (this session)`;
+  const fallback = envDefaultModel();
+  if (fallback) return `${fallback} (env default)`;
+  return 'sonnet (built-in)';
+}
+
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@[\]/-]{0,127}$/;
 
 function truncateString(str, maxLen = 80) {
   if (!str) return '';
@@ -362,6 +400,7 @@ function buildSessionsView(chatId) {
     const activeBadge = s.isActive ? ' *(Active)*' : '';
     text += `${icon} *${escapeMarkdown(s.name)}*${activeBadge}\n`;
     text += `   ID: ${idLabel}\n`;
+    text += `   Model: \`${describeModel(s)}\`\n`;
   }
 
   text += `\n_Tap a session below to switch to it:_`;
@@ -566,6 +605,7 @@ I am Heimdall, your remote DevOps guardian standing on the Bifrost bridge. Send 
 • /switch <name> - Switch active session by name
 • /new [name] - Clear active session, or create a new named session (\`/new <name>\`)
 • /compact [focus] - Compact conversation context to reduce memory and tokens
+• /model [alias] - Show or set the model for the active session (\`/model opus\`, \`/model clear\`)
 • /current - View active session details
 • /delete [name] - Delete a saved session
 • /cancel - Abort currently running task
@@ -618,7 +658,7 @@ bot.command('switch', async (ctx) => {
   }
 
   const idStr = res.session.id ? `\`${res.session.id.slice(0, 8)}...\`` : '_New (no messages yet)_';
-  await ctx.reply(`🟢 *Switched to session "${escapeMarkdown(res.session.name)}"* (ID: ${idStr}).\nAll subsequent messages will resume this conversation.`, {
+  await ctx.reply(`🟢 *Switched to session "${escapeMarkdown(res.session.name)}"* (ID: ${idStr}).\nModel: \`${describeModel(res.session)}\`\nAll subsequent messages will resume this conversation.`, {
     parse_mode: 'Markdown',
   });
 });
@@ -664,9 +704,10 @@ bot.command('current', async (ctx) => {
 
   const msg = `📌 *Active Session:* *${escapeMarkdown(active.name)}*\n\n` +
     `• *Claude Session ID:* ${idStr}\n` +
+    `• *Model:* \`${describeModel(active)}\`\n` +
     `• *Created:* ${created}\n` +
     `• *Last Active:* ${lastActive}\n\n` +
-    `_Use /sessions to view all sessions or /switch <name> to switch._`;
+    `_Use /model <alias> to pin a model, /sessions to view all sessions, or /switch <name> to switch._`;
 
   await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
@@ -697,6 +738,41 @@ bot.command('delete', async (ctx) => {
   await ctx.reply(`🗑️ Session "*${escapeMarkdown(nameArg)}*" deleted.\nActive session is now "*${escapeMarkdown(res.activeSession)}*".`, {
     parse_mode: 'Markdown',
   });
+});
+
+// /model [alias|clear]: Pin the model used for the active session
+bot.command('model', async (ctx) => {
+  const active = sessionManager.getActive(ctx.chat.id);
+  const arg = ctx.message.text.replace(/^\/model(?:@\S+)?/i, '').trim();
+
+  if (!arg) {
+    return ctx.reply(
+      `🧠 *Model for "${escapeMarkdown(active.name)}":* \`${describeModel(active)}\`\n\n` +
+        `Pin one with \`/model opus\`, \`/model sonnet\`, \`/model haiku\`, \`/model fable\`, or a full id such as \`gemini-4-argon[1m]\`.\n` +
+        `\`/model clear\` removes the pin and uses \`ANTHROPIC_DEFAULT_MODEL\`.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (arg === 'clear' || arg === 'default') {
+    const res = sessionManager.setModel(ctx.chat.id, active.name, null);
+    return ctx.reply(
+      `🧠 Session "*${escapeMarkdown(res.name)}*" now uses the env default: \`${describeModel(sessionManager.getActive(ctx.chat.id))}\`.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (!MODEL_PATTERN.test(arg)) {
+    return ctx.reply(
+      '❌ Model must be an alias (`opus`, `sonnet`, `haiku`, `fable`) or a model id such as `gemini-4-argon[1m]`.'
+    );
+  }
+
+  const res = sessionManager.setModel(ctx.chat.id, active.name, arg);
+  await ctx.reply(
+    `🧠 Session "*${escapeMarkdown(res.name)}*" will use \`${res.model}\` on the next message, including when that conversation is resumed.`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // /compact [instructions]: Compact active session context
@@ -838,6 +914,7 @@ bot.command('status', async (ctx) => {
 • *Working Tree:* ${sys.gitDirty}
 • *K8s Context:* \`${sys.k8sContext}\`
 • *Docker:* \`${sys.dockerStatus}\`
+• *Model:* \`${describeModel(active)}\`
 `;
 
   await ctx.reply(statusMsg, { parse_mode: 'Markdown' });
@@ -1006,6 +1083,14 @@ async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) 
 
   if (safetyPromptPath) {
     args.push('--append-system-prompt-file', safetyPromptPath);
+  }
+
+  // Session pin wins. Otherwise ANTHROPIC_DEFAULT_MODEL. Either flag overrides
+  // the concrete model saved in a resumed transcript.
+  const launchModel = modelForLaunch(activeSession);
+  if (launchModel) {
+    args.push('--model', launchModel);
+    console.log(`[claude] Model for "${activeSession.name}": ${launchModel}`);
   }
 
   if (activeSession.id) {
