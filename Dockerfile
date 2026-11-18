@@ -64,9 +64,8 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-COPY bot.mjs ./
+COPY src ./src
 COPY entrypoint.sh ./
-COPY safety-prompt.txt ./
 RUN chmod +x /app/entrypoint.sh
 
 # 8. Setup Workspace and config directories for user 'node'
@@ -78,4 +77,4 @@ ENV HOME=/home/node
 WORKDIR /workspace
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["node", "/app/bot.mjs"]
+CMD ["node", "/app/src/bot.mjs"]

@@ -15,7 +15,7 @@ services:
       - "8080"
     volumes:
       - bifrost_data:/app/data
-      - ./bifrost-config.json:/app/data/config.json:ro
+      - ./config/bifrost-config.json:/app/data/config.json:ro
     environment:
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:-}

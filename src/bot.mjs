@@ -5,6 +5,7 @@ import { spawn, execSync } from 'node:child_process';
 import readline from 'node:readline';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Multi-Session Manager (Embedded for zero external module dependencies)
@@ -1075,11 +1076,12 @@ async function executeClaudePrompt(ctx, promptText, customInitialStatus = null) 
   }
 
   // Safety Guardrail: Force human-in-the-loop confirmation for any destructive commands
-  const safetyPromptPath = fs.existsSync('/app/safety-prompt.txt')
-    ? '/app/safety-prompt.txt'
-    : fs.existsSync(path.join(process.cwd(), 'safety-prompt.txt'))
-    ? path.join(process.cwd(), 'safety-prompt.txt')
-    : null;
+  const safetyPromptCandidates = [
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'safety-prompt.txt'),
+    '/app/src/safety-prompt.txt',
+    path.join(process.cwd(), 'src/safety-prompt.txt'),
+  ];
+  const safetyPromptPath = safetyPromptCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 
   if (safetyPromptPath) {
     args.push('--append-system-prompt-file', safetyPromptPath);

@@ -20,7 +20,7 @@ A self-contained DevOps & engineering agent powered by **Claude Code CLI** and d
 │                           │ (http://bifrost:8080)      │
 │   ┌───────────────────────┴────────────────────────┐   │
 │   │ heimdall                                       │   │
-│   │  • Telegram Bot Controller (bot.mjs)           │   │
+│   │  • Telegram Bot Controller (src/bot.mjs)       │   │
 │   │  • Headless Claude Code CLI                    │   │
 │   │  • Toolchain: Docker, Kubectl, Helm, Git, Py   │   │
 │   └───────────────────────┬────────────────────────┘   │
@@ -80,6 +80,12 @@ docker compose logs -f
 Stop stack:
 ```bash
 ./stop.sh
+```
+
+Upgrade images and restart (keeps volumes):
+```bash
+# Pull the Bifrost image, rebuild Heimdall, recreate containers
+./upgrade.sh
 ```
 
 To edit credentials later:

@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 console.log('🧪 Running Heimdall Stream Parser Test Suite...\n');
 
 // ---------------------------------------------------------------------------
-// Extracted parser logic matching bot.mjs
+// Extracted parser logic matching src/bot.mjs
 // ---------------------------------------------------------------------------
 function parseClaudeStreamEvents(lines) {
   let finalResultText = '';
